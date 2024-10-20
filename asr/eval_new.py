@@ -62,8 +62,6 @@ def evaluate_model(model, dataloader):
         encoded_len_list.append(encoded_len)
 
         preds_list.append(preds)
-        if i == 5:
-            break
 
     return calculate_wer(
         model, preds_list, encoded_len_list, targets_list

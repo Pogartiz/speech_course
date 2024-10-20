@@ -11,7 +11,7 @@ from src.transforms import get_transform
 class ASRDataset(torch.utils.data.Dataset):
     def __init__(self, conf):
         super().__init__()
-
+        print(conf)
         self.transform = get_transform(conf.transforms)
 
         manifest_path = Path(__file__).parent.parent / "data" / conf.manifest_name

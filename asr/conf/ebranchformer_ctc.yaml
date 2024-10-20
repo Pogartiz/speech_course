@@ -10,7 +10,7 @@ model:
     features_num: 64
     d_model: &d_model 256
     layers_num: 8
-    dropout: &droupout 0.1
+    dropout: &dropout 0.1
     attn_config:
       embed_dim: *d_model
       num_heads: 4
@@ -18,7 +18,7 @@ model:
       size: *d_model
       expansion_factor: 3
       kernel_size: 7
-      dropout: *droupout
+      dropout: *dropout
       use_linear_after_conv: False
     ffn_expansion_factor: 2
     merge_conv_kernel: 31
@@ -43,7 +43,7 @@ optim:
 
 
 train_dataloader:
-  num_workers: 1
+  num_workers: 10
   batch_size: 64
   prefetch_factor: 1
   dataset:
@@ -63,8 +63,8 @@ train_dataloader:
       - name: log_scaler
 
 val_dataloader:
-  num_workers: ${train_dataloader.num_workers}
-  batch_size: ${train_dataloader.batch_size}
+  num_workers: 1
+  batch_size: 64
   prefetch_factor: ${train_dataloader.prefetch_factor}
   dataset:
     manifest_name: test_opus/crowd/manifest.jsonl
@@ -74,10 +74,11 @@ val_dataloader:
 
 trainer:
   check_val_every_n_epoch: 2
-  log_every_n_steps: 1000
+  log_every_n_steps: 100
   precision: 32
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   accelerator: auto
-  max_steps: 30000
+  max_epochs: 1
+  max_steps: 600
   devices: 1

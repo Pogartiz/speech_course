@@ -1,9 +1,8 @@
 from typing import Optional, Union
 
-from omegaconf import DictConfig
-import hydra
 import torch
 import torch.nn
+from omegaconf import DictConfig
 
 from src.submodules.subsampling import StackingSubsampling
 from src.submodules.positional_encoding import PositionalEncoding
@@ -27,19 +26,18 @@ class ConvolutionalSpatialGatingUnit(torch.nn.Module):
         """
 
         super().__init__()
-        # TODO: LayerNorm
-        self.norm = None
+        self.norm = torch.nn.LayerNorm(size // 2)
 
-        # TODO: DepthWise Conv
-        self.conv = None
+        self.conv = torch.nn.Conv1d(
+            size // 2, size // 2, kernel_size, groups=size // 2, padding=(kernel_size - 1) // 2
+        )
 
         if use_linear_after_conv:
-            self.linear = None
+            self.linear = torch.nn.Linear(size // 2, size // 2)
         else:
             self.linear = None
 
-        # Dropout
-        self.dropout = None
+        self.dropout = torch.nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor):
         """
@@ -48,9 +46,16 @@ class ConvolutionalSpatialGatingUnit(torch.nn.Module):
         Outputs:
             out: B x T x C
         """
-        # TODO
+        x_r, x_g = x.chunk(2, dim=-1)
 
-        return None
+        x_g = self.norm(x_g).transpose(1, 2)
+        x_g = self.conv(x_g).transpose(1, 2)
+
+        if self.linear is not None:
+            x_g = self.linear(x_g)
+
+        out = self.dropout(x_r * x_g)
+        return out
 
 
 class ConvolutionalGatingMLP(torch.nn.Module):
@@ -73,14 +78,20 @@ class ConvolutionalGatingMLP(torch.nn.Module):
         """
         super().__init__()
 
-        # TODO: First Channel Projection with GeLU Activation
-        self.channel_proj1 = None
+        self.channel_proj1 = torch.nn.Sequential(
+            torch.nn.Linear(size, size * expansion_factor),
+            torch.nn.GELU()
+        )
 
-        # TODO: Convlutional Spatial Gating Unit
-        self.csgu = None
+        self.csgu = ConvolutionalSpatialGatingUnit(
+            size=size * expansion_factor,
+            kernel_size=kernel_size,
+            dropout=dropout,
+            use_linear_after_conv=use_linear_after_conv
+        )
 
-        # TODO: Second Channel Projection with GeLU Activation
-        self.channel_proj2 = None
+        self.channel_proj2 = torch.nn.Sequential(torch.nn.Linear(size * expansion_factor // 2, size))
+
 
     def forward(self, features: torch.Tensor):
         """
@@ -88,11 +99,12 @@ class ConvolutionalGatingMLP(torch.nn.Module):
             features: B x T x C
         Outputs:
             out: B x T x C
-
         """
-        # TODO
+        features = self.channel_proj1(features)
+        features = self.csgu(features)
+        features = self.channel_proj2(features)
 
-        return None
+        return features
 
 
 class FeedForward(torch.nn.Module):
@@ -114,10 +126,10 @@ class FeedForward(torch.nn.Module):
             activation: torch.nn.Module - Activation function
         """
         super().__init__()
-        self.linear1 = None
-        self.linear2 = None
-        self.dropout = None
-        self.activation = None
+        self.linear1 = torch.nn.Linear(input_dim, hidden_dim)
+        self.linear2 = torch.nn.Linear(hidden_dim, input_dim)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.activation = activation
 
     def forward(self, features: torch.Tensor):
         """
@@ -126,9 +138,13 @@ class FeedForward(torch.nn.Module):
         Outputs:
             out: B x T x C
         """
-        # TODO
+        features = self.linear1(features)
+        features = self.activation(features)
+        features = self.dropout(features)
+        features = self.linear2(features)
+        features = self.dropout(features)
 
-        return None
+        return features
 
 
 class EBranchformerEncoderLayer(torch.nn.Module):
@@ -138,11 +154,11 @@ class EBranchformerEncoderLayer(torch.nn.Module):
         attn_config: Union[DictConfig, dict],
         cgmlp_config: Union[DictConfig, dict],
         ffn_expansion_factor: int = 4,
-        droupout: float = 0.0,
+        dropout: float = 0.0,
         merge_conv_kernel: int = 3,
     ):
         """
-        E-Bbranchformer Layer (https://arxiv.org/pdf/2210.00077)
+        E-Branchformer Layer (https://arxiv.org/pdf/2210.00077)
         Args:
             size: int - Embedding dim
             attn_config: DictConfig or dict - Config for MultiheadAttention
@@ -151,31 +167,33 @@ class EBranchformerEncoderLayer(torch.nn.Module):
             dropout: float - Dropout rate
             merge_conv_kernel: int - Kernel size for merging module
         """
-
         super().__init__()
 
-        # MultiheadAttention from torch.nn
-        self.attn = None
+        # attn
+        self.attn = torch.nn.MultiheadAttention(**attn_config)
 
-        # ConvolutionalGatingMLP module
-        self.cgmlp = None
+        # cgmlp
+        self.cgmlp = ConvolutionalGatingMLP(**cgmlp_config)
 
-        # First and Second FeedForward modules
-        self.feed_forward1 = None
-        self.feed_forward2 = None
+        # feedforwrd
+        self.feed_forward1 = FeedForward(input_dim=size, hidden_dim=size * ffn_expansion_factor, dropout=dropout)
+        self.feed_forward2 = FeedForward(input_dim=size, hidden_dim=size * ffn_expansion_factor, dropout=dropout)
 
-        # Normalization modules
-        self.norm_ffn1 = None
-        self.norm_ffn2 = None
-        self.norm_mha = None
-        self.norm_mlp = None
-        self.norm_final = None
+        # norm
+        self.norm_ffn1 = torch.nn.LayerNorm(size)
+        self.norm_ffn2 = torch.nn.LayerNorm(size)
+        self.norm_mha = torch.nn.LayerNorm(size)
+        self.norm_mlp = torch.nn.LayerNorm(size)
+        self.norm_final = torch.nn.LayerNorm(size)
 
-        self.dropout = None
+        self.dropout = torch.nn.Dropout(dropout)
 
-        # DepthWise Convolution and Linear projection for merging module
-        self.depthwise_conv_fusion = None
-        self.merge_proj = None
+        # depthwise
+        self.depthwise_conv_fusion = torch.nn.Conv1d(
+            size * 2, size * 2, kernel_size=merge_conv_kernel, stride=1,
+            padding=(merge_conv_kernel - 1) // 2, groups=size * 2
+        )
+        self.merge_proj = torch.nn.Linear(size * 2, size)
 
     def forward(
         self,
@@ -191,9 +209,50 @@ class EBranchformerEncoderLayer(torch.nn.Module):
         Outputs:
             out: B x T x C
         """
-        # TODO
+        device = features.device
 
-        return None
+        # ffn1
+        residual = features
+        x = self.norm_ffn1(features)
+        x = self.feed_forward1(x)
+        x = residual + 0.5 * x
+
+        # attn        
+        x_gl = self.norm_mha(x)
+        if pos_emb is not None:
+            x_gl += pos_emb
+        key_padding_mask = (torch.arange(x_gl.size(1), device=device).unsqueeze(0).expand(features_length.size(0), x_gl.size(1)) >= features_length.unsqueeze(1))
+        key_padding_mask = key_padding_mask.transpose(0, 1)
+
+        attn_output, _ = self.attn(x_gl, x_gl, x_gl, key_padding_mask=key_padding_mask)
+        x_global = self.dropout(attn_output)
+
+        # cgmlp
+        residual = x
+        x = self.norm_mlp(x)
+        x_local = self.cgmlp(x)
+
+        # Merge global and local
+        x_concat = torch.cat([x_global, x_local], dim=-1)
+        x_tmp = x_concat.transpose(1, 2)
+        x_tmp = self.depthwise_conv_fusion(x_tmp)
+        x_tmp = x_tmp.transpose(1, 2)
+        x_merged = self.merge_proj(x_concat + x_tmp)
+
+        # Residual Connection after Merging
+        x = residual + self.dropout(x_merged)
+
+        # Second FeedForward with residual
+        residual = x
+        x = self.norm_ffn2(x)
+        x = self.feed_forward2(x)
+        x = residual + 0.5 * x
+
+        x = self.norm_final(x)
+
+        return x
+
+
 
 
 class EBranchformerEncoder(torch.nn.Module):
@@ -221,7 +280,7 @@ class EBranchformerEncoder(torch.nn.Module):
                 attn_config=attn_config,
                 cgmlp_config=cgmlp_config,
                 ffn_expansion_factor=ffn_expansion_factor,
-                droupout=dropout,
+                dropout=dropout,
                 merge_conv_kernel=merge_conv_kernel,
             )
             self.layers.append(layer)
